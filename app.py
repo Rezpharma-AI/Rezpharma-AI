@@ -17,15 +17,23 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
 # ==========================================
-# 1. AI MODEL & PAGE SETUP
+# 1. AI MODEL DEFINITION (GLOBAL)
 # ==========================================
 class SimpleNN(nn.Module):
     def __init__(self, n):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(n, 32), nn.ReLU(), nn.Dropout(0.2), nn.Linear(32, 16), nn.ReLU(), nn.Linear(16, 1), nn.Sigmoid())
+        # Deeper network for complex liver markers
+        self.net = nn.Sequential(
+            nn.Linear(n, 32), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(32, 16), nn.ReLU(),
+            nn.Linear(16, 1), nn.Sigmoid()
+        )
     def forward(self, x): return self.net(x)
 
-st.set_page_config(page_title="Rezpharma AI | Liver & NASH Suite", page_icon="🧬", layout="wide")
+# ==========================================
+# 2. PAGE SETUP & CLINICAL CSS
+# ==========================================
+st.set_page_config(page_title="Rezpharma AI | Open Source Liver Suite", page_icon="🧬", layout="wide")
 
 st.markdown("""
 <style>
@@ -58,7 +66,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar
+# ==========================================
+# 3. SIDEBAR & LOGO
+# ==========================================
 logo_paths = ["images/logo.png", "logo.png", "data/logo.png"]
 logo_loaded = False
 for path in logo_paths:
@@ -67,26 +77,26 @@ for path in logo_paths:
         logo_loaded = True
         break
 if not logo_loaded:
-    st.sidebar.markdown("<div style='text-align: center; padding: 20px 0;'><h2 style='color: #ffffff; margin:0;'>🧬 Rezpharma AI</h2><p style='color: #8cb4d5; font-size: 14px; margin-top:5px;'>Liver & NASH Suite</p></div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='text-align: center; padding: 20px 0;'><h2 style='color: #ffffff; margin:0;'>🧬 Rezpharma AI</h2><p style='color: #8cb4d5; font-size: 14px; margin-top:5px;'>Open Source Liver Suite</p></div>", unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🧪 Modules")
-st.sidebar.markdown("• Hepatic Serum AI<br>• Derived Indices<br>• Correlation Matrix", unsafe_allow_html=True)
+st.sidebar.markdown("• Hepatic Serum AI<br>• Derived Indices<br>• Biomarker Dictionary", unsafe_allow_html=True)
 st.sidebar.markdown("---")
-st.sidebar.caption("v4.0 Liver Specialist • Research Use Only")
+st.sidebar.caption("v5.0 Open Source • Research Use Only")
 
 # ==========================================
-# 2. MAIN APP
+# 4. MAIN APP
 # ==========================================
 st.title("Rezpharma AI — Hepatic & NASH Suite")
-st.markdown("**SERUM BIOMARKER FUSION** | *INR · Transaminases · Lipids · Glycemic Control*")
+st.markdown("**OPEN SOURCE SERUM FUSION** | *INR · Transaminases · Lipids · Glycemic Control*")
 
-tab1, tab2, tab3 = st.tabs(["🩸 Liver Serum AI", "🧫 Tissue Histology", "⚙️ Lab & Patent"])
+tab1, tab2, tab3 = st.tabs(["🩸 Liver Serum AI", "🧫 Tissue Histology", "⚙️ Research Lab & Dictionary"])
 
 # ================= TAB 1: LIVER SERUM =================
 with tab1:
     st.markdown("#### ① HEPATIC SERUM PANEL & AI PREDICTION")
-    st.markdown("`TARGETS: ALT, AST, GGT, ALP, BILIRUBIN, INR, TG, TC, HDL-C, LDL-C, VLDL, HBA1C, INSULIN`")
+    st.markdown("`TARGETS: INR · TG · ALT · AST · ALP · GGT · Bilirubin · HbA1c · TC · VLDL · Insulin · LDL-C · HDL-C`")
     
     with st.container(border=True):
         uploaded_file = st.file_uploader("Upload Liver Cohort CSV (Requires 'GROUP' 0/1)", type=["csv"])
@@ -154,7 +164,7 @@ with tab1:
                             f1, t1, _ = roc_curve(y_te, lr_probs)
                             f2, t2, _ = roc_curve(y_te, dl_probs)
                             ax.plot(f1, t1, '--', label=f'Logistic Baseline (AUC = {roc_auc_score(y_te, lr_probs):.3f})', color='#57606a')
-                            ax.plot(f2, t2, '-', lw=3, label=f'Liver MLP v4 (AUC = {roc_auc_score(y_te, dl_probs):.3f})', color='#005b96')
+                            ax.plot(f2, t2, '-', lw=3, label=f'Liver MLP v5 (AUC = {roc_auc_score(y_te, dl_probs):.3f})', color='#005b96')
                             ax.plot([0, 1], [0, 1], 'k--', alpha=0.2)
                             ax.set_xlabel('False Positive Rate'); ax.set_ylabel('True Positive Rate')
                             ax.set_title('NASH/Liver Prediction ROC'); ax.legend()
@@ -165,6 +175,11 @@ with tab1:
                             fig.savefig(buf, format="png", dpi=300, bbox_inches="tight")
                             st.download_button("💾 Export ROC Curve (PNG)", buf.getvalue(), "liver_roc.png", "image/png")
                             
+                            # Save Model Weights
+                            model_buf = io.BytesIO()
+                            torch.save(model.state_dict(), model_buf)
+                            st.download_button("💾 Download Model Weights (.pth)", model_buf.getvalue(), "rezpharma_liver_v5.pth", "application/octet-stream")
+
                             imp = pd.DataFrame({"Biomarker": biomarkers, "Importance": np.abs(lr.coef_[0])}).sort_values("Importance", ascending=True)
                             fig3, ax3 = plt.subplots(figsize=(8, max(4, len(biomarkers)*0.3)))
                             sns.barplot(data=imp, x="Importance", y="Biomarker", color="#005b96", ax=ax3)
@@ -180,21 +195,45 @@ with tab1:
             sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5, ax=ax4)
             ax4.set_title("Biomarker Association Matrix")
             st.pyplot(fig4)
-            
-            buf2 = io.BytesIO()
-            fig4.savefig(buf2, format="png", dpi=300, bbox_inches="tight")
-            st.download_button("💾 Export Heatmap (PNG)", buf2.getvalue(), "liver_heatmap.png", "image/png")
 
-# ================= TAB 2 & 3 =================
+# ================= TAB 2: TISSUE =================
 with tab2:
     st.markdown("#### ④ TISSUE HISTOLOGY (NAS)")
     st.info("Upload H&E / Masson Trichrome images in the next update to correlate with serum INR/ALT.")
 
+# ================= TAB 3: RESEARCH LAB =================
 with tab3:
-    st.markdown("#### ⑤ RESEARCH LAB & PATENT DOSSIER")
+    st.markdown("#### ⑤ RESEARCH LAB & OPEN SOURCE TOOLS")
+    
+    # Biomarker Dictionary
+    st.markdown("**📖 Hepatic Biomarker Dictionary**")
+    dict_data = {
+        "Marker": ["ALT", "AST", "INR", "GGT", "ALP", "Bilirubin", "HbA1c", "Insulin", "TG", "HDL-C", "LDL-C", "VLDL"],
+        "Clinical Significance": [
+            "Hepatocellular injury (NASH hallmark)",
+            "Mitochondrial damage / Fibrosis (AST>ALT indicates advanced disease)",
+            "Synthetic function / Coagulation (Liver failure marker)",
+            "Biliary injury / Alcohol / Oxidative stress",
+            "Cholestasis / Infiltrative disease",
+            "Conjugation / Excretion function",
+            "Glycemic control / Insulin resistance driver",
+            "Hyperinsulinemia / Metabolic syndrome",
+            "VLDL precursor / Hepatic steatosis driver",
+            "Reverse cholesterol transport (Low in NASH)",
+            "Atherogenic risk",
+            "Triglyceride-rich lipoprotein / Steatosis marker"
+        ]
+    }
+    st.dataframe(pd.DataFrame(dict_data), use_container_width=True, hide_index=True)
+    
+    # Open Source Info
+    st.markdown("**🌐 Open Source Stack**")
     st.markdown("""
-    **⚖️ IP Checklist (Provisional Filing):**
-    - [x] Serum Biomarker Fusion Model (ALT, AST, INR, Lipids)
-    - [ ] Prior-art search (Keywords: "NASH non-invasive serum panel machine learning")
-    - [ ] File provisional patent before public disclosure
+    Built with:
+    *   **Streamlit** (UI Framework)
+    *   **PyTorch** (Deep Learning)
+    *   **Scikit-Learn** (Baseline Models)
+    *   **Pandas/NumPy** (Data Manipulation)
+    
+    *This project is open for research and educational purposes.*
     """)
