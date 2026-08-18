@@ -239,48 +239,196 @@ def in_vitro():
 
 def clinical():
     st.title("🩺 Clinical Studies")
-    st.markdown("Patient cohort analysis, biomarker discovery, and risk prediction.")
+    st.markdown("Patient cohort analysis, biomarker discovery, and risk prediction using machine learning.")
 
-    # Reuse a simplified version of the original liver analysis
     st.subheader("Biomarker Discovery and Classification")
-    uploaded = st.file_uploader("Upload clinical CSV (must contain 'GROUP' 0/1)", type="csv")
+    uploaded = st.file_uploader("Upload clinical CSV (must contain 'GROUP' 0/1)", type="csv", key="clinical_csv")
     if uploaded:
         df = pd.read_csv(uploaded)
         st.success("Data loaded.")
         st.dataframe(df.head())
 
-        if 'GROUP' in df.columns:
-            # Derived indices
-            if {'AST', 'ALT'}.issubset(df.columns):
-                df['AST_ALT_Ratio'] = df['AST'] / df['ALT'].replace(0, np.nan)
-            if {'TG', 'HDL-C'}.issubset(df.columns):
-                df['TG_HDL_Ratio'] = df['TG'] / df['HDL-C'].replace(0, np.nan)
+        if 'GROUP' not in df.columns:
+            st.error("The CSV must contain a 'GROUP' column with 0/1 values.")
+            return
 
-            biomarkers = [c for c in df.select_dtypes(include=np.number).columns if c != 'GROUP']
-            corr = df[biomarkers].corr()
-            fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r')
-            st.plotly_chart(fig, use_container_width=True)
+        # Derived indices
+        if {'AST', 'ALT'}.issubset(df.columns):
+            df['AST_ALT_Ratio'] = df['AST'] / df['ALT'].replace(0, np.nan)
+        if {'TG', 'HDL-C'}.issubset(df.columns):
+            df['TG_HDL_Ratio'] = df['TG'] / df['HDL-C'].replace(0, np.nan)
+        if {'AST', 'PLT'}.issubset(df.columns):
+            df['APRI'] = ((df['AST'] / 40) / df['PLT'].replace(0, np.nan)) * 100
 
-            st.markdown("**Feature Importance using Logistic Regression**")
-            from sklearn.linear_model import LogisticRegression
-            from sklearn.preprocessing import StandardScaler
+        # Identify numeric biomarkers (exclude GROUP)
+        biomarkers = [c for c in df.select_dtypes(include=np.number).columns if c != 'GROUP']
+
+        # Show correlation matrix
+        st.subheader("Correlation Matrix")
+        corr = df[biomarkers].corr()
+        fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r')
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ----- Train AI model -----
+        st.subheader("Train AI Model (Logistic Regression + PyTorch MLP)")
+        if st.button("🚀 Train Model"):
+            import torch
+            import torch.nn as nn
             from sklearn.model_selection import train_test_split
-            X = df[biomarkers].fillna(df[biomarkers].median())
-            y = df['GROUP']
-            X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.metrics import roc_auc_score, roc_curve
+
+            X = df[biomarkers].fillna(df[biomarkers].median()).values
+            y = df['GROUP'].values
+
+            # Train/test split
+            X_tr, X_te, y_tr, y_te = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y
+            )
+
+            if len(np.unique(y_te)) < 2:
+                st.error("Test set contains only one class. Cannot compute ROC.")
+                return
+
+            # Scale
             scaler = StandardScaler().fit(X_tr)
             X_tr_s = scaler.transform(X_tr)
+            X_te_s = scaler.transform(X_te)
+
+            # Logistic Regression
             lr = LogisticRegression(max_iter=1000).fit(X_tr_s, y_tr)
+            lr_probs = lr.predict_proba(X_te_s)[:, 1]
+            lr_auc = roc_auc_score(y_te, lr_probs)
+
+            # PyTorch MLP
+            class MLP(nn.Module):
+                def __init__(self, input_dim):
+                    super().__init__()
+                    self.net = nn.Sequential(
+                        nn.Linear(input_dim, 64),
+                        nn.BatchNorm1d(64),
+                        nn.ReLU(),
+                        nn.Dropout(0.3),
+                        nn.Linear(64, 32),
+                        nn.BatchNorm1d(32),
+                        nn.ReLU(),
+                        nn.Linear(32, 1),
+                        nn.Sigmoid()
+                    )
+                def forward(self, x):
+                    return self.net(x)
+
+            # Convert to tensors
+            X_tr_t = torch.tensor(X_tr_s, dtype=torch.float32)
+            y_tr_t = torch.tensor(y_tr, dtype=torch.float32).view(-1, 1)
+            X_te_t = torch.tensor(X_te_s, dtype=torch.float32)
+
+            model = MLP(X_tr_s.shape[1])
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+            loss_fn = nn.BCELoss()
+
+            # Training loop with early stopping
+            best_loss = np.inf
+            patience = 10
+            epochs_no_improve = 0
+            epochs = 200
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            for epoch in range(epochs):
+                model.train()
+                optimizer.zero_grad()
+                train_loss = loss_fn(model(X_tr_t), y_tr_t)
+                train_loss.backward()
+                optimizer.step()
+
+                # Validation loss (using training set as simple validation)
+                model.eval()
+                with torch.no_grad():
+                    val_loss = loss_fn(model(X_tr_t), y_tr_t)  # you can split training into train/val
+
+                # Update progress
+                progress = (epoch + 1) / epochs
+                progress_bar.progress(progress)
+                status_text.text(f"Epoch {epoch+1}/{epochs} - Loss: {train_loss.item():.4f}")
+
+                # Early stopping
+                if val_loss.item() < best_loss - 1e-4:
+                    best_loss = val_loss.item()
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= patience:
+                        status_text.text(f"Early stopping at epoch {epoch+1}")
+                        break
+
+            model.eval()
+            with torch.no_grad():
+                dl_probs = model(X_te_t).numpy().flatten()
+            dl_auc = roc_auc_score(y_te, dl_probs)
+
+            # ROC curves
+            fpr_lr, tpr_lr, _ = roc_curve(y_te, lr_probs)
+            fpr_dl, tpr_dl, _ = roc_curve(y_te, dl_probs)
+
+            fig_roc = go.Figure()
+            fig_roc.add_trace(go.Scatter(x=fpr_lr, y=tpr_lr, mode='lines',
+                                         name=f'Logistic Regression (AUC={lr_auc:.3f})',
+                                         line=dict(dash='dash', color='gray')))
+            fig_roc.add_trace(go.Scatter(x=fpr_dl, y=tpr_dl, mode='lines',
+                                         name=f'PyTorch MLP (AUC={dl_auc:.3f})',
+                                         line=dict(color='#005b96', width=3)))
+            fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines',
+                                         line=dict(dash='dot', color='black'), showlegend=False))
+            fig_roc.update_layout(title="ROC Curves", xaxis_title="False Positive Rate",
+                                  yaxis_title="True Positive Rate")
+            st.plotly_chart(fig_roc, use_container_width=True)
+
+            # Feature importance from logistic regression
             importance = pd.DataFrame({
                 'Biomarker': biomarkers,
                 'Coefficient': np.abs(lr.coef_[0])
             }).sort_values('Coefficient', ascending=True)
-            fig = px.bar(importance, x='Coefficient', y='Biomarker', orientation='h')
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("CSV must contain a 'GROUP' column (0/1) for classification.")
+            fig_imp = px.bar(importance, x='Coefficient', y='Biomarker', orientation='h',
+                             title="Feature Importance (Logistic Regression)")
+            st.plotly_chart(fig_imp, use_container_width=True)
+
+            # Save artifacts to session state for prediction
+            st.session_state['clinical_artifacts'] = {
+                'model': model,
+                'scaler': scaler,
+                'feature_names': biomarkers,
+                'lr_model': lr
+            }
+            st.success("Model trained successfully! You can now use the Single Patient Prediction below.")
+
+        # ----- Single Patient Prediction -----
+        if 'clinical_artifacts' in st.session_state:
+            st.subheader("Single Patient Prediction")
+            artifacts = st.session_state['clinical_artifacts']
+
+            with st.form("single_patient_form"):
+                input_data = {}
+                cols = st.columns(3)
+                for i, feat in enumerate(artifacts['feature_names']):
+                    with cols[i % 3]:
+                        default_val = float(df[feat].median()) if feat in df else 0.0
+                        input_data[feat] = st.number_input(feat, value=default_val, step=0.01)
+                predict_btn = st.form_submit_button("Predict Risk")
+
+            if predict_btn:
+                input_df = pd.DataFrame([input_data])
+                input_scaled = artifacts['scaler'].transform(input_df)
+                input_tensor = torch.tensor(input_scaled, dtype=torch.float32)
+                artifacts['model'].eval()
+                with torch.no_grad():
+                    prob = artifacts['model'](input_tensor).item()
+                st.metric("Predicted Probability", f"{prob:.3f}")
+                st.progress(min(int(prob * 100), 100))
     else:
-        st.info("Upload clinical data to perform biomarker analysis.")
+        st.info("Upload clinical data to perform biomarker analysis and train AI models.")
 
 def stats_graphs():
     st.title("📊 Statistical Tools & Graph Maker")
