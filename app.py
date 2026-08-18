@@ -376,38 +376,184 @@ def deep_learning():
     st.title("🧠 Deep Learning & Multimodal AI")
     st.markdown("Advanced AI tools for image analysis, text mining, and multimodal fusion.")
 
-    tab1, tab2, tab3 = st.tabs(["🖼️ Image Analysis", "📄 Text Mining", "🔗 Multimodal Fusion"])
+    tab1, tab2, tab3 = st.tabs(["🖼️ Image Classification", "📄 Text Mining", "🔗 Multimodal Fusion"])
 
+    # ---------------- TAB 1: IMAGE CLASSIFICATION ----------------
     with tab1:
-        st.subheader("Image Classification (Placeholder)")
-        st.markdown("Upload an image (e.g., histology, MRI) for classification using a pre‑trained model.")
-        uploaded = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-        if uploaded:
+        st.subheader("Image Classification with Pre‑trained CNN (ResNet18)")
+        st.markdown("Upload an image (e.g., histology, MRI) to classify it using a ResNet18 model pre‑trained on ImageNet.")
+
+        uploaded = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], key="dl_image")
+        if uploaded is not None:
             from PIL import Image
-            img = Image.open(uploaded)
-            st.image(img, caption="Uploaded Image", use_column_width=True)
-            st.info("Model integration coming soon. Currently displaying image only.")
+            import torch
+            import torchvision.transforms as transforms
+            from torchvision import models
+
+            # Load image
+            image = Image.open(uploaded).convert("RGB")
+            st.image(image, caption="Uploaded Image", use_column_width=True)
+
+            # Load pre-trained ResNet18
+            try:
+                model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+                model.eval()
+
+                # Preprocess
+                preprocess = transforms.Compose([
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+                input_tensor = preprocess(image).unsqueeze(0)
+
+                # Predict
+                with torch.no_grad():
+                    output = model(input_tensor)
+                    probabilities = torch.nn.functional.softmax(output[0], dim=0)
+
+                # Load ImageNet labels
+                import requests
+                labels_url = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
+                try:
+                    labels = requests.get(labels_url).text.splitlines()
+                except:
+                    labels = [f"Class {i}" for i in range(1000)]
+
+                # Show top 5 predictions
+                top5_prob, top5_catid = torch.topk(probabilities, 5)
+                st.markdown("### Top Predictions:")
+                for i in range(5):
+                    st.write(f"{labels[top5_catid[i]]}: {top5_prob[i].item()*100:.2f}%")
+
+            except Exception as e:
+                st.error(f"Error loading model: {e}")
+                st.info("Make sure 'torch' and 'torchvision' are installed (check requirements.txt).")
         else:
-            st.info("Upload an image to test the AI module.")
+            st.info("Upload an image to classify it.")
 
+    # ---------------- TAB 2: TEXT MINING ----------------
     with tab2:
-        st.subheader("Text Mining (PubMed Abstracts)")
-        st.markdown("Paste text or upload a PDF to extract key information using NLP.")
-        text_input = st.text_area("Enter text for analysis", height=200)
-        if st.button("Analyze Text"):
-            if text_input:
-                # Simple word frequency placeholder
-                words = text_input.lower().split()
-                freq = pd.Series(words).value_counts().head(20)
-                fig = px.bar(freq, orientation='h')
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Please enter some text.")
+        st.subheader("Text Mining & Document Analysis")
+        st.markdown("Paste text or upload multiple .txt files to extract top keywords and analyze document similarity.")
 
+        # Input method
+        input_method = st.radio("Input method", ["Paste text", "Upload files"])
+
+        documents = []
+        if input_method == "Paste text":
+            text_input = st.text_area("Enter text (one document per line or a single paragraph)", height=200)
+            if text_input:
+                # Split by newline for multiple docs, else treat as one
+                docs = [doc.strip() for doc in text_input.split('\n') if doc.strip()]
+                if not docs:
+                    docs = [text_input.strip()]
+                documents = docs
+        else:
+            uploaded_files = st.file_uploader("Upload .txt files", type=["txt"], accept_multiple_files=True)
+            if uploaded_files:
+                for file in uploaded_files:
+                    documents.append(file.read().decode("utf-8"))
+
+        if documents:
+            st.success(f"Loaded {len(documents)} document(s).")
+            st.subheader("Top Keywords (TF‑IDF)")
+
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            import numpy as np
+
+            # Create TF-IDF matrix
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=20)
+            tfidf_matrix = vectorizer.fit_transform(documents)
+            feature_names = vectorizer.get_feature_names_out()
+
+            # Sum TF-IDF scores across all documents for global keywords
+            global_scores = tfidf_matrix.sum(axis=0).A1
+            top_indices = global_scores.argsort()[::-1][:10]
+            top_keywords = [(feature_names[i], global_scores[i]) for i in top_indices]
+
+            # Display keywords as bar chart
+            if top_keywords:
+                kw_df = pd.DataFrame(top_keywords, columns=["Keyword", "Score"])
+                fig = px.bar(kw_df, x="Score", y="Keyword", orientation='h')
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Document similarity (cosine)
+            if len(documents) > 1:
+                st.subheader("Document Similarity Matrix")
+                from sklearn.metrics.pairwise import cosine_similarity
+                sim_matrix = cosine_similarity(tfidf_matrix)
+                fig = px.imshow(sim_matrix, text_auto=True, aspect="auto",
+                                labels=dict(x="Document", y="Document", color="Similarity"))
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Provide text or upload files to analyze.")
+
+    # ---------------- TAB 3: MULTIMODAL FUSION ----------------
     with tab3:
-        st.subheader("Multimodal Fusion Model")
-        st.markdown("Combine tabular clinical data with imaging or genomic features.")
-        st.info("This module will allow you to upload multiple data types and train a joint neural network. Coming soon.")
+        st.subheader("Multimodal Fusion (Concept Demo)")
+        st.markdown("""
+        This module demonstrates how to combine **tabular clinical data** with **image features** in a single neural network.
+
+        **How it works:**
+        1. Upload tabular data (CSV) and an image (optional).
+        2. Extract image features using a pre‑trained CNN (ResNet18).
+        3. Concatenate tabular features and image features.
+        4. Train a joint neural network.
+
+        **Full implementation requires a custom dataset and training loop. Below is a simplified demo.**
+        """)
+
+        # Tabular input
+        uploaded_csv = st.file_uploader("Upload tabular data (CSV) with a 'target' column", type="csv", key="mm_csv")
+        image_upload = st.file_uploader("Upload a representative image (optional)", type=["jpg", "png", "jpeg"], key="mm_img")
+
+        if uploaded_csv is not None:
+            df = pd.read_csv(uploaded_csv)
+            st.dataframe(df.head())
+
+            if 'target' in df.columns:
+                # Extract tabular features
+                tabular_features = df.drop(columns=['target']).select_dtypes(include=np.number).columns.tolist()
+                st.write(f"Tabular features: {len(tabular_features)}")
+
+                # If image uploaded, extract features
+                image_features = None
+                if image_upload is not None:
+                    st.info("Extracting image features using ResNet18...")
+                    from PIL import Image
+                    import torch
+                    import torchvision.transforms as transforms
+                    from torchvision import models
+
+                    image = Image.open(image_upload).convert("RGB")
+                    st.image(image, width=200)
+
+                    model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+                    # Remove final classification layer to get feature vector
+                    model = torch.nn.Sequential(*list(model.children())[:-1])
+                    model.eval()
+
+                    preprocess = transforms.Compose([
+                        transforms.Resize(256),
+                        transforms.CenterCrop(224),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    ])
+                    input_tensor = preprocess(image).unsqueeze(0)
+                    with torch.no_grad():
+                        image_features = model(input_tensor).squeeze().numpy()
+                    st.write(f"Image feature vector length: {image_features.shape[0]}")
+                else:
+                    st.write("No image features (only tabular).")
+
+                st.markdown("**Next step:** Train a neural network that takes both tabular and image features. This requires a dataset with paired tabular and image data for each sample.")
+                st.info("For a full implementation, you can extend this code to loop over multiple samples, extract image features for each, and train a custom PyTorch model.")
+            else:
+                st.warning("CSV must contain a 'target' column.")
+        else:
+            st.info("Upload tabular data to start multimodal fusion demo.")
 
 def sign_up():
     st.title("👤 Sign Up")
