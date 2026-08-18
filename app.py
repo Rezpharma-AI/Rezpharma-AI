@@ -1,311 +1,449 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy import stats
+from scipy.optimize import curve_fit
 import io
-import os
-import time
-from PIL import Image
-import torch
-import torch.nn as nn
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, roc_curve
-from scipy import stats # Added for Prism/SPSS statistical functions
+import base64
 
 # ==========================================
-# 1. AI MODEL DEFINITION (GLOBAL)
+# PAGE CONFIG & GLOBAL STYLES
 # ==========================================
-class SimpleNN(nn.Module):
-    def __init__(self, n):
-        super().__init__()
-        # Deeper network for complex liver markers
-        self.net = nn.Sequential(
-            nn.Linear(n, 32), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(32, 16), nn.ReLU(),
-            nn.Linear(16, 1), nn.Sigmoid()
-        )
-    def forward(self, x): return self.net(x)
+st.set_page_config(
+    page_title="RezPharma AI Platform",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ==========================================
-# 2. PAGE SETUP & CLINICAL CSS
-# ==========================================
-st.set_page_config(page_title="Rezpharma AI | Pharmaceutical Suite", page_icon="🧬", layout="wide")
-
+# Custom CSS for professional look
 st.markdown("""
 <style>
-    .stApp { background-color: #f4f7f9; }
-    h1, h2, h3, h4 { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #0a2540; }
-    h1 { border-bottom: 3px solid #005b96; padding-bottom: 10px; margin-bottom: 20px; }
-    section[data-testid="stSidebar"] { background-color: #0a2540; }
-    section[data-testid="stSidebar"] * { color: #ffffff !important; }
-    section[data-testid="stSidebar"] .stAlert { background-color: #11325c; border-color: #005b96; }
-    div[data-testid="stVerticalBlock"] > div[style*="border"] {
-        border-radius: 8px !important; border: 1px solid #d0d7de !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02) !important; background-color: #ffffff; padding: 20px;
-    }
+    .stApp { background-color: #f8f9fa; }
+    h1, h2, h3 { color: #0a2540; font-family: 'Segoe UI', Roboto, sans-serif; }
     .stButton>button {
-        background-color: #005b96; color: white; border: none; border-radius: 6px;
-        font-weight: 600; padding: 0.5rem 1.5rem; transition: all 0.2s;
+        background-color: #005b96; color: white; border-radius: 6px;
+        font-weight: 600; padding: 0.5rem 1.5rem; border: none;
     }
-    .stButton>button:hover { background-color: #03396c; color: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    .stButton>button:hover { background-color: #03396c; }
+    .formal-box {
+        background: linear-gradient(135deg, #0a2540 0%, #1a3a5c 100%);
+        color: white; padding: 30px; border-radius: 12px;
+        margin-bottom: 30px; text-align: center;
+    }
+    .formal-box h1 { color: white; }
+    .formal-box p { color: #d0d7de; font-size: 1.1rem; }
     div[data-testid="stMetric"] {
-        background-color: #ffffff; padding: 15px; border-radius: 8px;
-        border-left: 4px solid #005b96; box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+        background: white; padding: 15px; border-radius: 8px;
+        border-left: 4px solid #005b96; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    div[data-testid="stMetricLabel"] { color: #57606a !important; font-weight: 600; }
-    div[data-testid="stMetricValue"] { color: #0a2540 !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; border-bottom: 2px solid #d0d7de; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] {
-        background-color: #e1e4e8; border-radius: 6px 6px 0px 0px; color: #0a2540; font-weight: 600; padding: 10px 20px;
+        background: #e1e4e8; border-radius: 6px 6px 0 0;
+        color: #0a2540; font-weight: 600; padding: 10px 20px;
     }
-    .stTabs [aria-selected="true"] { background-color: #005b96 !important; color: white !important; }
+    .stTabs [aria-selected="true"] { background: #005b96; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. FORMAL SCIENTIFIC DISCLAIMER (TOP)
+# UTILITY FUNCTIONS
 # ==========================================
-st.markdown("""
-<div style='background-color: #fff3cd; padding: 20px; border-radius: 8px; border-left: 5px solid #ffc107; margin-bottom: 30px;'>
-    <h3 style='color: #856404; margin:0;'>⚠️ Scientific & Research Use Only</h3>
-    <p style='color: #664d03; margin-top:8px; font-size: 16px;'>
-        Rezpharma AI is an advanced computational suite engineered strictly for <strong>scientific research, pharmaceutical development, and educational purposes</strong>. 
-        The AI models, statistical tools, and derived indices provided herein are not validated for direct clinical diagnosis, patient treatment, or medical decision-making.
-    </p>
-</div>
-""", unsafe_allow_html=True)
+def download_link(df, filename="data.csv", text="Download CSV"):
+    """Generate a download link for a DataFrame."""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{text}</a>'
+    return href
+
+def hill_equation(x, bottom, top, ic50, hill_slope):
+    """Four-parameter logistic (Hill) equation for dose-response."""
+    return bottom + (top - bottom) / (1 + (x / ic50) ** hill_slope)
 
 # ==========================================
-# 4. SIDEBAR NAVIGATION & LOGO
-# ==========================================
-logo_paths = ["images/logo.png", "logo.png", "data/logo.png"]
-logo_loaded = False
-for path in logo_paths:
-    if os.path.exists(path):
-        st.sidebar.image(path, width=200)
-        logo_loaded = True
-        break
-if not logo_loaded:
-    st.sidebar.markdown("<div style='text-align: center; padding: 20px 0;'><h2 style='color: #ffffff; margin:0;'>🧬 Rezpharma AI</h2><p style='color: #8cb4d5; font-size: 14px; margin-top:5px;'>Pharma Research Suite</p></div>", unsafe_allow_html=True)
-
-st.sidebar.markdown("---")
-st.sidebar.title("🧭 Navigation")
-page = st.sidebar.radio("Select Module", [
-    "🏠 Home & Mission",
-    "🔐 Researcher Access (Sign Up)",
-    "🧫 In Vitro & Assays",
-    "🐁 In Vivo & PK/PD",
-    "🩸 Clinical & Serum AI",
-    "📊 Statistical Suite (Prism/SPSS)",
-    "🧠 Deep AI Multi-Mode"
-])
-
-st.sidebar.markdown("---")
-st.sidebar.caption("v6.0 Open Source • Research Use Only")
-
-# ==========================================
-# 5. MAIN APP ROUTING
+# PAGE FUNCTIONS
 # ==========================================
 
-if page == "🏠 Home & Mission":
-    st.title("Welcome to Rezpharma AI")
-    st.markdown("### The Open-Source Engine for Pharmaceutical Science")
-    st.write("""
-    Rezpharma AI bridges the gap between raw biological data and pharmacological insight. 
-    Our multi-modal suite provides researchers with specialized tools across the entire drug discovery pipeline:
-    
-    *   **In Vitro:** Cell viability, IC50 calculations, and assay normalization.
-    *   **In Vivo:** Pharmacokinetic modeling and animal cohort tracking.
-    *   **Clinical:** Deep learning on hepatic and metabolic serum panels.
-    *   **Statistical Engine:** Publication-ready graphing and hypothesis testing (Prism/SPSS alternatives).
-    *   **Deep AI:** Autonomous multi-modal hypothesis generation.
+def home():
+    st.markdown("""
+    <div class="formal-box">
+        <h1>🔬 RezPharma AI Platform</h1>
+        <p><strong>AI for Scientific Studies in Pharmaceutical Science & Medicine</strong></p>
+        <p style="font-size:1rem;">
+            This platform provides advanced computational tools for <em>in vivo</em>, <em>in vitro</em>, and <em>clinical</em> research.
+            It is intended for <strong>research and educational purposes only</strong>.
+            All results must be validated by qualified professionals before clinical or regulatory use.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🧪 In Vivo Modules", "3+")
+        st.markdown("Animal models, PK/PD, toxicology")
+    with col2:
+        st.metric("🧫 In Vitro Modules", "3+")
+        st.markdown("Dose‑response, assay processing, viability")
+    with col3:
+        st.metric("🩺 Clinical Modules", "4+")
+        st.markdown("Cohort analysis, biomarker discovery, risk models")
+
+    st.markdown("---")
+    st.markdown("""
+    ## 🚀 Getting Started
+    1. Use the **sidebar navigation** to switch between modules.
+    2. Upload your own data (CSV, Excel, or images) where required.
+    3. Explore the tools and download publication‑ready graphs.
+
+    ## 📚 Available Modules
+    - **In Vivo**: Statistical analysis of animal data, non‑compartmental PK, survival curves.
+    - **In Vitro**: IC50/EC50 fitting, plate reader normalization, Z‑factor.
+    - **Clinical**: Patient cohort summaries, ML classification, biomarker feature importance.
+    - **Stats & Graph Maker**: Prism‑style interactive plots, t‑tests, ANOVA, correlation.
+    - **Deep Learning & Multimodal AI**: Image classification, text mining, multimodal fusion.
+    - **Sign Up**: Create a free account to save your work (coming soon).
     """)
 
-elif page == "🔐 Researcher Access (Sign Up)":
-    st.title("🔐 Researcher Portal")
-    st.markdown("Create an account to save your models, datasets, and Deep AI research logs.")
-    
-    tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
-    
-    with tab_signup:
-        with st.form("signup_form"):
-            name = st.text_input("Full Name")
-            inst = st.text_input("Institution / Pharma Company")
-            email = st.text_input("Official Email")
-            submit = st.form_submit_button("Create Research Account")
-            
-            if submit:
-                if name and inst and email:
-                    st.success(f"✅ Account created for {name} at {inst}. (Mock Authentication for Prototype)")
-                    # Note: For production, use the `streamlit-authenticator` library
-                else:
-                    st.error("Please fill out all fields.")
+def in_vivo():
+    st.title("🧪 In Vivo Studies")
+    st.markdown("Tools for animal model data, pharmacokinetics, and toxicology.")
 
-elif page == "🧫 In Vitro & Assays":
-    st.title("🧫 In Vitro & Assay Module")
-    st.markdown("Tools for cell culture, dose-response curves, and IC50 estimation.")
-    st.info("Upload your raw absorbance/luminescence CSVs here to automatically calculate half-maximal inhibitory concentrations using 4-parameter logistic (4PL) regression.")
+    tab1, tab2, tab3 = st.tabs(["📊 Animal Model Analyzer", "💊 PK/PD (NCA)", "☠️ Toxicology Dashboard"])
 
-elif page == "🐁 In Vivo & PK/PD":
-    st.title("🐁 In Vivo & Pharmacokinetics")
-    st.markdown("Track animal models, dosing regimens, and calculate PK parameters (Cmax, Tmax, AUC, Half-life).")
-    st.info("Module under active development. Will support non-compartmental analysis (NCA) of plasma concentration-time profiles.")
+    with tab1:
+        st.subheader("Animal Model Data Analysis")
+        uploaded = st.file_uploader("Upload CSV with columns: Group, BodyWeight, OrganWeights, Biomarkers", type="csv")
+        if uploaded:
+            df = pd.read_csv(uploaded)
+            st.success("Data loaded.")
+            st.dataframe(df.head())
 
-elif page == "🩸 Clinical & Serum AI":
-    # [YOUR EXISTING BRILLIANT CODE, REFACTORED FOR MEMORY MANAGEMENT]
-    st.title("🩸 Clinical & Hepatic Serum AI")
-    st.markdown("**OPEN SOURCE SERUM FUSION** | *INR · Transaminases · Lipids · Glycemic Control*")
-    
-    with st.container(border=True):
-        uploaded_file = st.file_uploader("Upload Liver Cohort CSV (Requires 'GROUP' 0/1)", type=["csv"])
-        if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
-            st.success("✅ Custom hepatic cohort loaded.")
-        elif os.path.exists("data/serum.csv"):
-            df = pd.read_csv("data/serum.csv")
-            st.info("ℹ️ Using demo cohort. Upload your liver CSV to replace.")
+            # Basic statistics by group
+            group_col = st.selectbox("Grouping column", df.columns)
+            value_col = st.selectbox("Value column", df.select_dtypes(include=np.number).columns)
+
+            if group_col and value_col:
+                groups = df[group_col].unique()
+                if len(groups) >= 2:
+                    # T-test or ANOVA
+                    if len(groups) == 2:
+                        g1 = df[df[group_col] == groups[0]][value_col].dropna()
+                        g2 = df[df[group_col] == groups[1]][value_col].dropna()
+                        t_stat, p_val = stats.ttest_ind(g1, g2)
+                        st.markdown(f"**T‑test p‑value:** {p_val:.4f}")
+                    else:
+                        # One‑way ANOVA
+                        groups_data = [df[df[group_col] == g][value_col].dropna() for g in groups]
+                        f_stat, p_val = stats.f_oneway(*groups_data)
+                        st.markdown(f"**ANOVA p‑value:** {p_val:.4f}")
+
+                    # Plot
+                    fig = px.box(df, x=group_col, y=value_col, points="all")
+                    st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Please upload a CSV file.")
-            st.stop()
-            
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Subjects", len(df))
-        c2.metric("Control (0)", (df['GROUP'] == 0).sum() if 'GROUP' in df.columns else "N/A")
-        c3.metric("NASH/Liver (1)", (df['GROUP'] == 1).sum() if 'GROUP' in df.columns else "N/A")
+            st.info("Please upload a CSV file to begin.")
 
-    if 'AST' in df.columns and 'ALT' in df.columns:
-        df['DeRitis_AST_ALT'] = df['AST'] / df['ALT'].replace(0, np.nan)
-    if 'TG' in df.columns and 'HDL-C' in df.columns:
-        df['TG_HDL_IR_Proxy'] = df['TG'] / df['HDL-C'].replace(0, np.nan)
+    with tab2:
+        st.subheader("Non‑Compartmental PK Analysis (NCA)")
+        st.markdown("Upload time‑concentration data (Time, Concentration).")
+        uploaded = st.file_uploader("Upload PK data CSV", type="csv", key="pk")
+        if uploaded:
+            pk_df = pd.read_csv(uploaded)
+            st.dataframe(pk_df.head())
+            # Simple AUC calculation using trapezoidal rule
+            if {'Time', 'Concentration'}.issubset(pk_df.columns):
+                t = pk_df['Time'].values
+                c = pk_df['Concentration'].values
+                auc = np.trapz(c, t)
+                cmax = c.max()
+                tmax = t[np.argmax(c)]
+                st.metric("AUC (0‑t)", f"{auc:.2f}")
+                st.metric("Cmax", f"{cmax:.2f}")
+                st.metric("Tmax", f"{tmax:.2f}")
+            else:
+                st.warning("CSV must contain 'Time' and 'Concentration' columns.")
+        else:
+            st.info("Upload PK data to compute AUC, Cmax, Tmax.")
 
-    biomarkers = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'GROUP' and 'ID' not in c.upper()]
+    with tab3:
+        st.subheader("Toxicology Dashboard")
+        st.markdown("Placeholder for dose‑response toxicity curves and survival analysis.")
+        st.info("This module will be expanded to include Kaplan‑Meier survival plots and dose‑toxicity modelling.")
 
-    if 'GROUP' in df.columns and len(biomarkers) > 0:
-        with st.container(border=True):
-            st.markdown("#### DEEP LEARNING TRAINING (MLP)")
-            if st.button("🚀 Train Liver AI & Calibrate"):
-                y = df['GROUP'].values
-                if len(np.unique(y)) < 2:
-                    st.error("Cohort must contain BOTH groups (0 and 1).")
-                else:
-                    with st.status("🧠 Training Neural Network...", expanded=True) as status:
-                        st.write("Preprocessing and scaling data...")
-                        X = df[biomarkers].fillna(df[biomarkers].median()).values
-                        X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-                        
-                        scaler = StandardScaler().fit(X_tr)
-                        X_tr_s, X_te_s = scaler.transform(X_tr), scaler.transform(X_te)
-                        
-                        st.write("Training Logistic Baseline...")
-                        lr = LogisticRegression(max_iter=1000).fit(X_tr_s, y_tr)
-                        lr_probs = lr.predict_proba(X_te_s)[:, 1]
-                        
-                        st.write("Initializing PyTorch Liver MLP...")
-                        model = SimpleNN(X_tr_s.shape[1])
-                        opt = torch.optim.Adam(model.parameters(), lr=0.005, weight_decay=1e-4)
-                        loss_fn = nn.BCELoss()
-                        X_t = torch.tensor(X_tr_s, dtype=torch.float32)
-                        y_t = torch.tensor(y_tr, dtype=torch.float32).view(-1, 1)
-                        
-                        for epoch in range(100):
-                            opt.zero_grad(); loss_fn(model(X_t), y_t).backward(); opt.step()
-                        
-                        status.update(label="✅ Training Complete!", state="complete", expanded=False)
+def in_vitro():
+    st.title("🧫 In Vitro Studies")
+    st.markdown("Tools for cell‑based assays, dose‑response, and plate reader data.")
 
-                    model.eval()
-                    with torch.no_grad():
-                        dl_probs = model(torch.tensor(X_te_s, dtype=torch.float32)).numpy().flatten()
+    tab1, tab2, tab3 = st.tabs(["📈 Dose‑Response Curve Fitter", "🔬 Assay Data Processor", "🧮 Z‑Factor Calculator"])
 
-                    fig, ax = plt.subplots(figsize=(8, 5))
-                    f1, t1, _ = roc_curve(y_te, lr_probs)
-                    f2, t2, _ = roc_curve(y_te, dl_probs)
-                    ax.plot(f1, t1, '--', label=f'Logistic Baseline (AUC = {roc_auc_score(y_te, lr_probs):.3f})', color='#57606a')
-                    ax.plot(f2, t2, '-', lw=3, label=f'Liver MLP (AUC = {roc_auc_score(y_te, dl_probs):.3f})', color='#005b96')
-                    ax.plot([0, 1], [0, 1], 'k--', alpha=0.2)
-                    ax.set_xlabel('False Positive Rate'); ax.set_ylabel('True Positive Rate')
-                    ax.set_title('NASH/Liver Prediction ROC'); ax.legend()
-                    sns.despine()
-                    
-                    st.pyplot(fig)
-                    plt.close(fig) # 🛑 Memory management!
-                    
-                    model_buf = io.BytesIO()
-                    torch.save(model.state_dict(), model_buf)
-                    st.download_button("💾 Download Model Weights (.pth)", model_buf.getvalue(), "rezpharma_liver.pth", "application/octet-stream")
+    with tab1:
+        st.subheader("IC50 / EC50 Determination")
+        st.markdown("Upload CSV with columns: Concentration, Response (or Inhibition %).")
+        uploaded = st.file_uploader("Upload dose‑response data", type="csv")
+        if uploaded:
+            dr_df = pd.read_csv(uploaded)
+            st.dataframe(dr_df.head())
+            if {'Concentration', 'Response'}.issubset(dr_df.columns):
+                x = dr_df['Concentration'].values
+                y = dr_df['Response'].values
 
-elif page == "📊 Statistical Suite (Prism/SPSS)":
-    st.title("📊 Statistical Suite (Prism/SPSS Alternative)")
-    st.markdown("Perform standard pharmacological statistical analysis and generate publication-ready graphs.")
-    
-    uploaded_stat_file = st.file_uploader("Upload Data for Statistical Analysis", type=["csv"])
-    if uploaded_stat_file is not None:
-        stat_df = pd.read_csv(uploaded_stat_file)
-        st.dataframe(stat_df.head())
-        
-        num_cols = stat_df.select_dtypes(include=[np.number]).columns
-        cat_cols = stat_df.select_dtypes(exclude=[np.number]).columns
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            test_type = st.selectbox("Select Statistical Test", ["One-way ANOVA", "Independent T-Test", "Pearson Correlation"])
-            group_col = st.selectbox("Select Grouping Variable (Factor)", cat_cols) if len(cat_cols) > 0 else st.selectbox("No categorical columns", ["N/A"])
-            val_col = st.selectbox("Select Continuous Variable (Value)", num_cols) if len(num_cols) > 0 else st.selectbox("No numeric columns", ["N/A"])
-            
-        with c2:
-            graph_style = st.selectbox("Graph Style (Prism-like)", ["Bar Chart with SEM", "Boxplot with Scatter", "Violin Plot"])
-            
-        if st.button("Run Analysis & Generate Graph"):
-            if len(cat_cols) > 0 and len(num_cols) > 0 and test_type in ["One-way ANOVA", "Independent T-Test"]:
-                # Run Stats
-                groups = [group[val_col].dropna().values for name, group in stat_df.groupby(group_col)]
-                if test_type == "One-way ANOVA" and len(groups) > 1:
-                    stat_val, p_val = stats.f_oneway(*groups)
-                    st.success(f"**ANOVA Results:** F-statistic = {stat_val:.3f}, P-value = {p_val:.4f}")
-                elif test_type == "Independent T-Test" and len(groups) == 2:
-                    stat_val, p_val = stats.ttest_ind(groups[0], groups[1])
-                    st.success(f"**T-Test Results:** t-statistic = {stat_val:.3f}, P-value = {p_val:.4f}")
-                
-                # Plotting
-                plt.figure(figsize=(8, 6))
-                if graph_style == "Bar Chart with SEM":
-                    sns.barplot(data=stat_df, x=group_col, y=val_col, errorbar="se", palette="Blues_d", capsize=.1)
-                elif graph_style == "Boxplot with Scatter":
-                    sns.boxplot(data=stat_df, x=group_col, y=val_col, palette="Blues_d", showfliers=False)
-                    sns.stripplot(data=stat_df, x=group_col, y=val_col, color=".25")
-                else:
-                    sns.violinplot(data=stat_df, x=group_col, y=val_col, palette="Blues_d")
-                
-                plt.title(f"{val_col} by {group_col} (p={p_val:.3f})")
-                sns.despine()
-                st.pyplot(plt)
-                plt.close()
+                # Fit Hill equation
+                try:
+                    p0 = [np.min(y), np.max(y), np.median(x), 1]
+                    popt, _ = curve_fit(hill_equation, x, y, p0=p0, maxfev=5000)
+                    bottom, top, ic50, hill = popt
+                    st.success(f"Fitted IC50: **{ic50:.3f}** (concentration units)")
+                    st.write(f"Hill slope: {hill:.3f}")
 
-elif page == "🧠 Deep AI Multi-Mode":
-    st.title("🧠 Deep AI Multi-Mode Engine")
-    st.markdown("Autonomous hypothesis generation and multi-modal data synthesis across biological domains.")
-    
-    query = st.text_area("Enter your research objective, hypothesis, or describe your dataset:", height=150, placeholder="e.g., Investigate the correlation between elevated INR and lipid peroxidation markers in NASH models...")
-    
-    if st.button("Initiate Deep Thinking Protocol"):
-        with st.status("Deep AI is reasoning across modalities...", expanded=True) as status:
-            st.write("🔍 Scanning uploaded biomarkers and clinical metadata...")
-            time.sleep(1.5)
-            st.write("🧬 Cross-referencing with known hepatic and metabolic pathways...")
-            time.sleep(1.5)
-            st.write("🧪 Evaluating in-vivo / in-vitro translational potential...")
-            time.sleep(1.5)
-            st.write("📊 Synthesizing pharmacological hypotheses...")
-            time.sleep(1.5)
-            status.update(label="Reasoning Complete", state="complete", expanded=False)
-            
-        st.markdown("### 🧬 AI Synthesized Report")
-        st.info(f"**Objective:** {query}")
-        st.markdown("""
-        **1. Pathway Analysis:** The uploaded variables strongly suggest involvement in the *PPAR-α/γ signaling cascade* and *mitochondrial β-oxidation* pathways.
-        **2. Statistical Anomaly:** The ratio of AST/ALT (De Ritis) combined with the TG/HDL proxy indicates advanced metabolic dysregulation rather than simple steatosis.
-        **3. Proposed Hypothesis:** We hypothesize that targeting the identified lipid-peroxidation markers with a dual-agonist will reverse the observed synthetic dysfunction (INR elevation).
-        **4. Recommended Next Steps:** Transition to *In Vitro* module to simulate dose-response on HepG2 cell lines using the generated parameters.
-        """)
+                    # Generate curve
+                    x_smooth = np.logspace(np.log10(np.min(x)), np.log10(np.max(x)), 100)
+                    y_smooth = hill_equation(x_smooth, *popt)
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=x, y=y, mode='markers', name='Data'))
+                    fig.add_trace(go.Scatter(x=x_smooth, y=y_smooth, mode='lines', name='Fit'))
+                    fig.update_layout(xaxis_title="Concentration", yaxis_title="Response")
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Fitting failed: {e}")
+            else:
+                st.warning("CSV must contain 'Concentration' and 'Response' columns.")
+        else:
+            st.info("Upload dose‑response data to fit a 4‑parameter logistic curve.")
+
+    with tab2:
+        st.subheader("Plate Reader Data Normalization")
+        st.markdown("Upload raw plate reader data (e.g., 96‑well format) or a CSV with well IDs.")
+        st.info("This module is under development. Please check back later.")
+
+    with tab3:
+        st.subheader("Z‑Factor Calculator")
+        st.markdown("Enter mean and SD of positive and negative controls to compute Z‑factor.")
+        col1, col2 = st.columns(2)
+        with col1:
+            mean_pos = st.number_input("Mean Positive Control", value=100.0)
+            sd_pos = st.number_input("SD Positive Control", value=10.0)
+        with col2:
+            mean_neg = st.number_input("Mean Negative Control", value=10.0)
+            sd_neg = st.number_input("SD Negative Control", value=5.0)
+        if st.button("Calculate Z‑factor"):
+            z = 1 - (3*(sd_pos + sd_neg)) / abs(mean_pos - mean_neg)
+            st.metric("Z‑factor", f"{z:.3f}")
+            if z > 0.5:
+                st.success("Excellent assay quality.")
+            elif z > 0:
+                st.warning("Marginal assay quality.")
+            else:
+                st.error("Poor assay – Z‑factor ≤ 0.")
+
+def clinical():
+    st.title("🩺 Clinical Studies")
+    st.markdown("Patient cohort analysis, biomarker discovery, and risk prediction.")
+
+    # Reuse a simplified version of the original liver analysis
+    st.subheader("Biomarker Discovery and Classification")
+    uploaded = st.file_uploader("Upload clinical CSV (must contain 'GROUP' 0/1)", type="csv")
+    if uploaded:
+        df = pd.read_csv(uploaded)
+        st.success("Data loaded.")
+        st.dataframe(df.head())
+
+        if 'GROUP' in df.columns:
+            # Derived indices
+            if {'AST', 'ALT'}.issubset(df.columns):
+                df['AST_ALT_Ratio'] = df['AST'] / df['ALT'].replace(0, np.nan)
+            if {'TG', 'HDL-C'}.issubset(df.columns):
+                df['TG_HDL_Ratio'] = df['TG'] / df['HDL-C'].replace(0, np.nan)
+
+            biomarkers = [c for c in df.select_dtypes(include=np.number).columns if c != 'GROUP']
+            corr = df[biomarkers].corr()
+            fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r')
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("**Feature Importance using Logistic Regression**")
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.model_selection import train_test_split
+            X = df[biomarkers].fillna(df[biomarkers].median())
+            y = df['GROUP']
+            X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
+            scaler = StandardScaler().fit(X_tr)
+            X_tr_s = scaler.transform(X_tr)
+            lr = LogisticRegression(max_iter=1000).fit(X_tr_s, y_tr)
+            importance = pd.DataFrame({
+                'Biomarker': biomarkers,
+                'Coefficient': np.abs(lr.coef_[0])
+            }).sort_values('Coefficient', ascending=True)
+            fig = px.bar(importance, x='Coefficient', y='Biomarker', orientation='h')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("CSV must contain a 'GROUP' column (0/1) for classification.")
+    else:
+        st.info("Upload clinical data to perform biomarker analysis.")
+
+def stats_graphs():
+    st.title("📊 Statistical Tools & Graph Maker")
+    st.markdown("Prism‑style interactive graphs and SPSS‑like statistical tests.")
+
+    # Data upload
+    uploaded = st.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
+    if uploaded:
+        if uploaded.name.endswith('.csv'):
+            df = pd.read_csv(uploaded)
+        else:
+            df = pd.read_excel(uploaded)
+        st.success("Data loaded.")
+        st.dataframe(df.head())
+
+        # Graph builder
+        st.subheader("Graph Builder")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            x_axis = st.selectbox("X axis", df.columns)
+        with col2:
+            y_axis = st.selectbox("Y axis", df.columns)
+        with col3:
+            chart_type = st.selectbox("Chart type", ["Scatter", "Line", "Bar", "Box", "Violin", "Histogram"])
+
+        if chart_type == "Scatter":
+            fig = px.scatter(df, x=x_axis, y=y_axis)
+        elif chart_type == "Line":
+            fig = px.line(df, x=x_axis, y=y_axis)
+        elif chart_type == "Bar":
+            fig = px.bar(df, x=x_axis, y=y_axis)
+        elif chart_type == "Box":
+            fig = px.box(df, x=x_axis, y=y_axis)
+        elif chart_type == "Violin":
+            fig = px.violin(df, x=x_axis, y=y_axis)
+        else:  # Histogram
+            fig = px.histogram(df, x=x_axis)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Statistical tests
+        st.subheader("Statistical Tests")
+        test_type = st.selectbox("Select test", ["T‑test (two groups)", "ANOVA (multiple groups)", "Pearson correlation", "Chi‑square test"])
+
+        if test_type == "T‑test (two groups)":
+            group_col = st.selectbox("Group column", df.columns)
+            value_col = st.selectbox("Value column", df.select_dtypes(include=np.number).columns)
+            groups = df[group_col].unique()
+            if len(groups) == 2:
+                g1 = df[df[group_col] == groups[0]][value_col].dropna()
+                g2 = df[df[group_col] == groups[1]][value_col].dropna()
+                t_stat, p_val = stats.ttest_ind(g1, g2)
+                st.metric("p‑value", f"{p_val:.4f}")
+                st.write(f"t‑statistic: {t_stat:.4f}")
+            else:
+                st.warning("T‑test requires exactly 2 groups.")
+
+        elif test_type == "ANOVA (multiple groups)":
+            group_col = st.selectbox("Group column", df.columns)
+            value_col = st.selectbox("Value column", df.select_dtypes(include=np.number).columns)
+            groups = df[group_col].unique()
+            if len(groups) >= 2:
+                groups_data = [df[df[group_col] == g][value_col].dropna() for g in groups]
+                f_stat, p_val = stats.f_oneway(*groups_data)
+                st.metric("p‑value", f"{p_val:.4f}")
+                st.write(f"F‑statistic: {f_stat:.4f}")
+            else:
+                st.warning("ANOVA requires at least 2 groups.")
+
+        elif test_type == "Pearson correlation":
+            num_cols = df.select_dtypes(include=np.number).columns
+            if len(num_cols) >= 2:
+                col1 = st.selectbox("First variable", num_cols)
+                col2 = st.selectbox("Second variable", num_cols)
+                r, p = stats.pearsonr(df[col1].dropna(), df[col2].dropna())
+                st.metric("Pearson r", f"{r:.4f}")
+                st.metric("p‑value", f"{p:.4f}")
+            else:
+                st.warning("Need at least 2 numeric columns.")
+
+        elif test_type == "Chi‑square test":
+            col1 = st.selectbox("First categorical", df.columns)
+            col2 = st.selectbox("Second categorical", df.columns)
+            contingency = pd.crosstab(df[col1], df[col2])
+            chi2, p, dof, expected = stats.chi2_contingency(contingency)
+            st.metric("p‑value", f"{p:.4f}")
+            st.write(f"Chi‑square statistic: {chi2:.4f}, dof={dof}")
+            st.dataframe(contingency)
+
+    else:
+        st.info("Upload a dataset to begin creating graphs and running tests.")
+
+def deep_learning():
+    st.title("🧠 Deep Learning & Multimodal AI")
+    st.markdown("Advanced AI tools for image analysis, text mining, and multimodal fusion.")
+
+    tab1, tab2, tab3 = st.tabs(["🖼️ Image Analysis", "📄 Text Mining", "🔗 Multimodal Fusion"])
+
+    with tab1:
+        st.subheader("Image Classification (Placeholder)")
+        st.markdown("Upload an image (e.g., histology, MRI) for classification using a pre‑trained model.")
+        uploaded = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+        if uploaded:
+            from PIL import Image
+            img = Image.open(uploaded)
+            st.image(img, caption="Uploaded Image", use_column_width=True)
+            st.info("Model integration coming soon. Currently displaying image only.")
+        else:
+            st.info("Upload an image to test the AI module.")
+
+    with tab2:
+        st.subheader("Text Mining (PubMed Abstracts)")
+        st.markdown("Paste text or upload a PDF to extract key information using NLP.")
+        text_input = st.text_area("Enter text for analysis", height=200)
+        if st.button("Analyze Text"):
+            if text_input:
+                # Simple word frequency placeholder
+                words = text_input.lower().split()
+                freq = pd.Series(words).value_counts().head(20)
+                fig = px.bar(freq, orientation='h')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("Please enter some text.")
+
+    with tab3:
+        st.subheader("Multimodal Fusion Model")
+        st.markdown("Combine tabular clinical data with imaging or genomic features.")
+        st.info("This module will allow you to upload multiple data types and train a joint neural network. Coming soon.")
+
+def sign_up():
+    st.title("👤 Sign Up")
+    st.markdown("Create a free account to save your analyses and access premium features (coming soon).")
+
+    with st.form("signup_form"):
+        name = st.text_input("Full Name")
+        email = st.text_input("Email Address")
+        institution = st.text_input("Institution / Company")
+        role = st.selectbox("Role", ["Researcher", "Clinician", "Student", "Industry Professional", "Other"])
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        submit = st.form_submit_button("Sign Up")
+
+        if submit:
+            if not name or not email or not password:
+                st.error("Please fill in all required fields.")
+            elif password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                # Here you would typically save to a database
+                st.success(f"Thank you {name}! Your account has been created (demo only – no data stored).")
+                st.balloons()
+
+# ==========================================
+# NAVIGATION SETUP
+# ==========================================
+pages = [
+    st.Page(home, title="Home", icon="🏠"),
+    st.Page(in_vivo, title="In Vivo", icon="🧪"),
+    st.Page(in_vitro, title="In Vitro", icon="🧫"),
+    st.Page(clinical, title="Clinical", icon="🩺"),
+    st.Page(stats_graphs, title="Stats & Graph Maker", icon="📊"),
+    st.Page(deep_learning, title="Deep Learning & Multimodal AI", icon="🧠"),
+    st.Page(sign_up, title="Sign Up", icon="👤"),
+]
+
+nav = st.navigation(pages)
+nav.run()
